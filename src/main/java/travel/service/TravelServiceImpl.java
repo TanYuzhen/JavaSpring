@@ -2,6 +2,7 @@ package travel.service;
 
 import edu.fudan.common.util.JsonUtils;
 import edu.fudan.common.util.Response;
+import org.apache.skywalking.apm.toolkit.trace.TraceCrossThread;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,30 +11,14 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.http.MediaType;
 import travel.entity.*;
 import travel.repository.TripRepository;
 
-// import travel.config.RestProxyTemplate;
-import org.springframework.http.RequestEntity.HeadersBuilder;
-import org.springframework.context.ApplicationContext;
-import org.springframework.http.RequestEntity;
-import org.springframework.web.util.UriComponentsBuilder;
-import java.net.URI;
-import java.util.concurrent.Future;
-import org.apache.http.client.utils.URIBuilder;
 import java.util.*;
-import java.io.IOException;
-import java.net.URISyntaxException;
-import java.io.UnsupportedEncodingException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.concurrent.*;
 
 /**
  * @author fdse
@@ -47,13 +32,9 @@ public class TravelServiceImpl implements TravelService {
     @Autowired
     private RestTemplate restTemplate;
 
-    @Autowired
-    private ApplicationContext applicationContext;
-    
-    // @Autowired
-    // private RestProxyTemplate restProxyTemplate;
-
     private static final Logger LOGGER = LoggerFactory.getLogger(TravelServiceImpl.class);
+
+    private static final ExecutorService executorService = Executors.newFixedThreadPool(20, new CustomizableThreadFactory("HttpClientThreadPool-"));
 
     String success = "Success";
     String noContent = "No Content";
@@ -68,6 +49,7 @@ public class TravelServiceImpl implements TravelService {
             repository.save(trip);
             return new Response<>(1, "Create trip:" + ti.toString() + ".", null);
         } else {
+            TravelServiceImpl.LOGGER.error("Create trip error.Trip already exists,TripId: {}", info.getTripId());
             return new Response<>(1, "Trip " + info.getTripId().toString() + " already exists", null);
         }
     }
@@ -80,11 +62,14 @@ public class TravelServiceImpl implements TravelService {
             Trip trip = repository.findByTripId(tripId1);
             if (trip != null) {
                 route = getRouteByRouteId(trip.getRouteId(), headers);
+            } else {
+                TravelServiceImpl.LOGGER.error("Get route by Trip id error.Trip not found, TripId: {}", tripId);
             }
         }
         if (route != null) {
             return new Response<>(1, success, route);
         } else {
+            TravelServiceImpl.LOGGER.error("Get route by Trip id error.Route not found, TripId: {}", tripId);
             return new Response<>(0, noContent, null);
         }
     }
@@ -96,10 +81,13 @@ public class TravelServiceImpl implements TravelService {
         Trip trip = repository.findByTripId(tripId1);
         if (trip != null) {
             trainType = getTrainType(trip.getTrainTypeId(), headers);
+        } else {
+            TravelServiceImpl.LOGGER.error("Get Train Type by Trip id error.Trip not found, TripId: {}", tripId);
         }
         if (trainType != null) {
             return new Response<>(1, success, trainType);
         } else {
+            TravelServiceImpl.LOGGER.error("Get Train Type by Trip id error.Train Type not found, TripId: {}", tripId);
             return new Response<>(0, noContent, null);
         }
     }
@@ -117,6 +105,7 @@ public class TravelServiceImpl implements TravelService {
         if (!tripList.isEmpty()) {
             return new Response<>(1, success, tripList);
         } else {
+            TravelServiceImpl.LOGGER.warn("Get trips by routes warn.Trip list: {}", "No content");
             return new Response<>(0, noContent, null);
         }
     }
@@ -129,6 +118,7 @@ public class TravelServiceImpl implements TravelService {
         if (trip != null) {
             return new Response<>(1, "Search Trip Success by Trip Id " + tripId, trip);
         } else {
+            TravelServiceImpl.LOGGER.error("Retrieve trip error.Trip not found,TripId: {}", tripId);
             return new Response<>(0, "No Content according to tripId" + tripId, null);
         }
     }
@@ -143,6 +133,7 @@ public class TravelServiceImpl implements TravelService {
             repository.save(trip);
             return new Response<>(1, "Update trip:" + ti.toString(), trip);
         } else {
+            TravelServiceImpl.LOGGER.error("Update trip error.Trip not found,TripId: {}", info.getTripId());
             return new Response<>(1, "Trip" + info.getTripId().toString() + "doesn 't exists", null);
         }
     }
@@ -154,6 +145,7 @@ public class TravelServiceImpl implements TravelService {
             repository.deleteByTripId(ti);
             return new Response<>(1, "Delete trip:" + tripId + ".", tripId);
         } else {
+            TravelServiceImpl.LOGGER.error("Delete trip error.Trip not found,TripId: {}", tripId);
             return new Response<>(0, "Trip " + tripId + " doesn't exist.", null);
         }
     }
@@ -166,9 +158,6 @@ public class TravelServiceImpl implements TravelService {
         String endPlaceName = info.getEndPlace();
         String startingPlaceId = queryForStationId(startingPlaceName, headers);
         String endPlaceId = queryForStationId(endPlaceName, headers);
-
-        System.out.println("\u001B[32m" + startingPlaceId + "\u001B[0m");
-        System.out.println("\u001B[32m" + endPlaceId + "\u001B[0m");
 
         //This is the final result
         List<TripResponse> list = new ArrayList<>();
@@ -185,6 +174,7 @@ public class TravelServiceImpl implements TravelService {
                     tempRoute.getStations().indexOf(startingPlaceId) < tempRoute.getStations().indexOf(endPlaceId)) {
                 TripResponse response = getTickets(tempTrip, tempRoute, startingPlaceId, endPlaceId, startingPlaceName, endPlaceName, info.getDepartureTime(), headers);
                 if (response == null) {
+                    TravelServiceImpl.LOGGER.warn("Query trip error.Tickets not found,start: {},end: {},time: {}", startingPlaceName, endPlaceName, info.getDepartureTime());
                     return new Response<>(0, "No Trip info content", null);
                 }
                 list.add(response);
@@ -193,14 +183,93 @@ public class TravelServiceImpl implements TravelService {
         return new Response<>(1, success, list);
     }
 
+    @TraceCrossThread
+    class MyCallable implements Callable<TripResponse> {
+        private TripInfo info;
+        private Trip tempTrip;
+        private HttpHeaders headers;
+        private String startingPlaceId;
+        private String endPlaceId;
+
+        MyCallable(TripInfo info, String startingPlaceId, String endPlaceId, Trip tempTrip, HttpHeaders headers) {
+            this.info = info;
+            this.tempTrip = tempTrip;
+            this.headers = headers;
+            this.startingPlaceId = startingPlaceId;
+            this.endPlaceId = endPlaceId;
+        }
+
+        @Override
+        public TripResponse call() throws Exception {
+            TravelServiceImpl.LOGGER.info("tripId: [{}], routeId: [{}]. Start to query", tempTrip.getTripId().toString(), tempTrip.getRouteId());
+
+            String startingPlaceName = info.getStartingPlace();
+            String endPlaceName = info.getEndPlace();
+            Route tempRoute = getRouteByRouteId(tempTrip.getRouteId(), headers);
+
+            TripResponse response = null;
+            if (tempRoute.getStations().contains(startingPlaceId) &&
+                    tempRoute.getStations().contains(endPlaceId) &&
+                    tempRoute.getStations().indexOf(startingPlaceId) < tempRoute.getStations().indexOf(endPlaceId)) {
+                response = getTickets(tempTrip, tempRoute, startingPlaceId, endPlaceId, startingPlaceName, endPlaceName, info.getDepartureTime(), headers);
+            }
+            if (response == null) {
+                TravelServiceImpl.LOGGER.warn("tripId: [{}], routeId: [{}]. Query trip error. Tickets not found,start: {},end: {},time: {}", tempTrip.getTripId().toString(), tempTrip.getRouteId(), startingPlaceName, endPlaceName, info.getDepartureTime());
+            } else {
+                TravelServiceImpl.LOGGER.info("tripId: [{}], routeId: [{}]. Query success", tempTrip.getTripId().toString(), tempTrip.getRouteId());
+            }
+            return response;
+        }
+    }
+
+    @Override
+    public Response queryInParallel(TripInfo info, HttpHeaders headers) {
+        //Gets the start and arrival stations of the train number to query. The originating and arriving stations received here are both station names, so two requests need to be sent to convert to station ids
+        String startingPlaceName = info.getStartingPlace();
+        String endPlaceName = info.getEndPlace();
+        String startingPlaceId = queryForStationId(startingPlaceName, headers);
+        String endPlaceId = queryForStationId(endPlaceName, headers);
+
+        //This is the final result
+        List<TripResponse> list = new ArrayList<>();
+
+        //Check all train info
+        List<Trip> allTripList = repository.findAll();
+        List<Future<TripResponse>> futureList = new ArrayList<>();
+
+        for (Trip tempTrip : allTripList) {
+            MyCallable callable = new MyCallable(info, startingPlaceId, endPlaceId, tempTrip, headers);
+            Future<TripResponse> future = executorService.submit(callable);
+            futureList.add(future);
+        }
+
+        for (Future<TripResponse> future : futureList) {
+            try {
+                TripResponse response = future.get();
+                if (response != null) {
+                    list.add(response);
+                }
+            } catch (Exception e) {
+                TravelServiceImpl.LOGGER.error(e.toString());
+            }
+        }
+
+        if (list.isEmpty()) {
+            return new Response<>(0, "No Trip info content", null);
+        } else {
+            return new Response<>(1, success, list);
+        }
+    }
+
     @Override
     public Response getTripAllDetailInfo(TripAllDetailInfo gtdi, HttpHeaders headers) {
         TripAllDetail gtdr = new TripAllDetail();
-        TravelServiceImpl.LOGGER.info("[TravelService] [TripAllDetailInfo] TripId: {}", gtdi.getTripId());
+        TravelServiceImpl.LOGGER.info("[TripAllDetailInfo] TripId: {}", gtdi.getTripId());
         Trip trip = repository.findByTripId(new TripId(gtdi.getTripId()));
         if (trip == null) {
             gtdr.setTripResponse(null);
             gtdr.setTrip(null);
+            TravelServiceImpl.LOGGER.error("Get trip detail error.Trip not found,TripId: {}", gtdi.getTripId());
         } else {
             String startingPlaceName = gtdi.getFrom();
             String endPlaceName = gtdi.getTo();
@@ -208,13 +277,11 @@ public class TravelServiceImpl implements TravelService {
             String endPlaceId = queryForStationId(endPlaceName, headers);
             Route tempRoute = getRouteByRouteId(trip.getRouteId(), headers);
 
-            System.out.println("\u001B[32m" + startingPlaceId + "\u001B[0m");
-            System.out.println("\u001B[32m" + endPlaceId + "\u001B[0m");
-
             TripResponse tripResponse = getTickets(trip, tempRoute, startingPlaceId, endPlaceId, gtdi.getFrom(), gtdi.getTo(), gtdi.getTravelDate(), headers);
             if (tripResponse == null) {
                 gtdr.setTripResponse(null);
                 gtdr.setTrip(null);
+                TravelServiceImpl.LOGGER.warn("Get trip detail error.Tickets not found,start: {},end: {},time: {}", startingPlaceName, endPlaceName, gtdi.getTravelDate());
             } else {
                 gtdr.setTripResponse(tripResponse);
                 gtdr.setTrip(repository.findByTripId(new TripId(gtdi.getTripId())));
@@ -236,7 +303,7 @@ public class TravelServiceImpl implements TravelService {
         query.setEndPlace(endPlaceName);
         query.setDepartureTime(departureTime);
 
-        HttpEntity requestEntity = new HttpEntity(query, headers);
+        HttpEntity requestEntity = new HttpEntity(query, null);
         ResponseEntity<Response> re = restTemplate.exchange(
                 "http://ts-ticketinfo-service:15681/api/v1/ticketinfoservice/ticketinfo",
                 HttpMethod.POST,
@@ -246,7 +313,7 @@ public class TravelServiceImpl implements TravelService {
         TravelResult resultForTravel = JsonUtils.conveterObject(re.getBody().getData(), TravelResult.class);
 
         //Ticket order _ high-speed train (number of tickets purchased)
-        requestEntity = new HttpEntity(headers);
+        requestEntity = new HttpEntity(null);
         ResponseEntity<Response<SoldTicket>> re2 = restTemplate.exchange(
                 "http://ts-order-service:12031/api/v1/orderservice/order/" + departureTime + "/" + trip.getTripId().toString(),
                 HttpMethod.GET,
@@ -288,13 +355,13 @@ public class TravelServiceImpl implements TravelService {
         calendarStart.setTime(trip.getStartingTime());
         calendarStart.add(Calendar.MINUTE, minutesStart);
         response.setStartingTime(calendarStart.getTime());
-        TravelServiceImpl.LOGGER.info("[Train Service] calculate time：{}  time: {}", minutesStart, calendarStart.getTime());
+        TravelServiceImpl.LOGGER.info("calculate time：{}  time: {}", minutesStart, calendarStart.getTime());
 
         Calendar calendarEnd = Calendar.getInstance();
         calendarEnd.setTime(trip.getStartingTime());
         calendarEnd.add(Calendar.MINUTE, minutesEnd);
         response.setEndTime(calendarEnd.getTime());
-        TravelServiceImpl.LOGGER.info("[Train Service] calculate time：{}  time: {}", minutesEnd, calendarEnd.getTime());
+        TravelServiceImpl.LOGGER.info("calculate time：{}  time: {}", minutesEnd, calendarEnd.getTime());
 
         response.setTripId(new TripId(result.getData().getTrainNumber()));
         response.setTrainTypeId(trip.getTrainTypeId());
@@ -310,6 +377,7 @@ public class TravelServiceImpl implements TravelService {
         if (tripList != null && !tripList.isEmpty()) {
             return new Response<>(1, success, tripList);
         }
+        TravelServiceImpl.LOGGER.warn("Query all trips warn: {}", "No Content");
         return new Response<>(0, noContent, null);
     }
 
@@ -327,7 +395,7 @@ public class TravelServiceImpl implements TravelService {
             if (calDateA.get(Calendar.MONTH) > calDateB.get(Calendar.MONTH)) {
                 return false;
             } else if (calDateA.get(Calendar.MONTH) == calDateB.get(Calendar.MONTH)) {
-                return calDateA.get(Calendar.DAY_OF_MONTH) <= calDateB.get(Calendar.DAY_OF_MONTH) ;
+                return calDateA.get(Calendar.DAY_OF_MONTH) <= calDateB.get(Calendar.DAY_OF_MONTH);
             } else {
                 return true;
             }
@@ -337,7 +405,7 @@ public class TravelServiceImpl implements TravelService {
     }
 
     private TrainType getTrainType(String trainTypeId, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(headers);
+        HttpEntity requestEntity = new HttpEntity(null);
         ResponseEntity<Response<TrainType>> re = restTemplate.exchange(
                 "http://ts-train-service:14567/api/v1/trainservice/trains/" + trainTypeId,
                 HttpMethod.GET,
@@ -349,7 +417,7 @@ public class TravelServiceImpl implements TravelService {
     }
 
     private String queryForStationId(String stationName, HttpHeaders headers) {
-        HttpEntity requestEntity = new HttpEntity(headers);
+        HttpEntity requestEntity = new HttpEntity(null);
         ResponseEntity<Response<String>> re = restTemplate.exchange(
                 "http://ts-ticketinfo-service:15681/api/v1/ticketinfoservice/ticketinfo/" + stationName,
                 HttpMethod.GET,
@@ -361,144 +429,9 @@ public class TravelServiceImpl implements TravelService {
         return re.getBody().getData();
     }
 
-    // private String queryForStationId(String stationName, HttpHeaders headers) {
-    //     try (CloseableHttpClient client = HttpClients.createDefault()) {
-    //         URI url = new URIBuilder()
-    //                     .setScheme("http")
-    //                     .setHost("ts-ticketinfo-service")
-    //                     .setPort(15681)
-    //                     .setPath("/api/v1/ticketinfoservice/ticketinfo/" + stationName)
-    //                     .build();
-    //         HttpGet request = new HttpGet(url);
-
-    //         if (headers != null) {
-    //             headers.forEach((key, values) -> values.forEach(value -> request.addHeader(key, value)));
-    //         }
-
-    //         try (CloseableHttpResponse response = client.execute(request)) {
-    //             String body = EntityUtils.toString(response.getEntity(), "UTF-8");
-
-    //             ObjectMapper objectMapper = new ObjectMapper();
-    //             Response<String> res = objectMapper.readValue(body, new TypeReference<Response<String>>() {});
-
-    //             LOGGER.info("Query for Station id is: {}", res);
-    //             return res.getData();
-    //         }
-
-    //     } catch (IOException | URISyntaxException e) {  // 这里同时捕获 URISyntaxException
-    //         LOGGER.error("Failed to query station info for {}", stationName, e);
-    //         return null;
-    //     }
-    // }
-
-    // public String queryForStationId(String stationName, HttpHeaders headers) {
-    //     try {
-    //         RestTemplate restTemplate = new RestTemplate();
-    //         URI url = new URI("http", null, "ts-ticketinfo-service", 15681,
-    //             "/api/v1/ticketinfoservice/ticketinfo/" + stationName, null, null);
-
-    //         HttpHeaders httpHeaders = new HttpHeaders();
-    //         if (headers != null) {
-    //             httpHeaders.putAll(headers);
-    //         }
-    //         httpHeaders.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
-
-    //         RequestEntity.HeadersBuilder<?> builder = RequestEntity.get(url);
-    //         for (Map.Entry<String, List<String>> entry : httpHeaders.entrySet()) {
-    //             builder.header(entry.getKey(), entry.getValue().toArray(new String[0]));
-    //         }
-
-    //         RequestEntity<Void> request = builder.build();
-    //         LOGGER.debug("Requesting station id with: {}", request);
-
-    //         ResponseEntity<Response<String>> response = restTemplate
-    //                 .exchange(request, new ParameterizedTypeReference<Response<String>>() {});
-
-    //         LOGGER.debug("Received station id response: {}", response.getBody());
-    //         return response.getBody() != null ? response.getBody().getData() : null;
-
-    //     } catch (URISyntaxException e) {
-    //         LOGGER.error("Failed to query station id for {}", stationName, e);
-    //         return null;
-    //     }
-    // }
-
-    // public String queryForStationId(String stationName, HttpHeaders headers) {
-    //     try {
-    //         URI url = new URIBuilder()
-    //                     .setScheme("http")
-    //                     .setHost("ts-ticketinfo-service")
-    //                     .setPort(15681)
-    //                     .setPath("/api/v1/ticketinfoservice/ticketinfo/" + stationName)
-    //                     .build();
-
-    //         HttpHeaders httpHeaders = new HttpHeaders();
-    //         if (headers != null) {
-    //             httpHeaders.putAll(headers);
-    //         }
-    //         httpHeaders.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
-
-    //         RequestEntity.HeadersBuilder<?> builder = RequestEntity.get(url);
-    //         for (Map.Entry<String, List<String>> entry : httpHeaders.entrySet()) {
-    //             builder.header(entry.getKey(), entry.getValue().toArray(new String[0]));
-    //         }
-
-    //         RequestEntity<Void> request = builder.build();
-    //         LOGGER.debug("Requesting station id with: {}", request);
-
-    //         ResponseEntity<Response<String>> response = restProxyTemplate.getRestTemplate()
-    //                 .exchange(request, new ParameterizedTypeReference<Response<String>>() {});
-
-    //         LOGGER.debug("Received station id response: {}", response.getBody());
-    //         return response.getBody() != null ? response.getBody().getData() : null;
-
-    //     } catch (URISyntaxException e) {
-    //         LOGGER.error("Failed to query station id for {}", stationName, e);
-    //         return null;
-    //     }
-    // }
-
-    // public String queryForStationId(String stationName, HttpHeaders headers) {
-    //     try {
-    //         // URL encode
-    //         String encodedStation = URLEncoder.encode(stationName, StandardCharsets.UTF_8.toString()).replace("+", "%20");;
-
-    //         // 构造 curl 命令
-    //         String url = "http://ts-ticketinfo-service:15681/api/v1/ticketinfoservice/ticketinfo/" + encodedStation;
-    //         String[] cmd = {"curl", "-s", url};
-
-    //         // 执行命令
-    //         Process process = Runtime.getRuntime().exec(cmd);
-    //         BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-
-    //         // 读取命令输出
-    //         StringBuilder output = new StringBuilder();
-    //         String line;
-    //         while ((line = reader.readLine()) != null) {
-    //             output.append(line);
-    //         }
-
-    //         process.waitFor();
-    //         reader.close();
-
-    //         System.out.println("\u001B[32m" + output.toString() + "\u001B[0m");
-    //         // 解析 JSON，取 data 字段
-    //         ObjectMapper mapper = new ObjectMapper();
-    //         JsonNode root = mapper.readTree(output.toString().trim());
-    //         JsonNode dataNode = root.get("data");
-
-    //         System.out.println("\u001B[32m" + dataNode.asText() + "\u001B[0m");
-    //         return dataNode != null ? dataNode.asText() : null;
-
-    //     } catch (IOException | InterruptedException e) {
-    //         e.printStackTrace();
-    //         return null;
-    //     }
-    // }
-
     private Route getRouteByRouteId(String routeId, HttpHeaders headers) {
         TravelServiceImpl.LOGGER.info("[Travel Service][Get Route By Id] Route ID：{}", routeId);
-        HttpEntity requestEntity = new HttpEntity(headers);
+        HttpEntity requestEntity = new HttpEntity(null);
         ResponseEntity<Response> re = restTemplate.exchange(
                 "http://ts-route-service:11178/api/v1/routeservice/routes/" + routeId,
                 HttpMethod.GET,
@@ -529,7 +462,7 @@ public class TravelServiceImpl implements TravelService {
 
         TravelServiceImpl.LOGGER.info("Seat request To String: {}", seatRequest.toString());
 
-        HttpEntity requestEntity = new HttpEntity(seatRequest, headers);
+        HttpEntity requestEntity = new HttpEntity(seatRequest, null);
         ResponseEntity<Response<Integer>> re = restTemplate.exchange(
                 "http://ts-seat-service:18898/api/v1/seatservice/seats/left_tickets",
                 HttpMethod.POST,
@@ -555,6 +488,7 @@ public class TravelServiceImpl implements TravelService {
         if (!adminTrips.isEmpty()) {
             return new Response<>(1, success, adminTrips);
         } else {
+            TravelServiceImpl.LOGGER.warn("Admin query all trips warn: {}", "No Content");
             return new Response<>(0, noContent, null);
         }
     }
